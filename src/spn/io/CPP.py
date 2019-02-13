@@ -8,56 +8,29 @@ import subprocess
 from spn.algorithms.Inference import log_likelihood
 from spn.io.Text import spn_to_str_equation
 from spn.structure.Base import get_nodes_by_type, Leaf, eval_spn_bottom_up, Sum, Product
-from spn.structure.leaves.parametric.Parametric import Gaussian
+from spn.structure.leaves.parametric.Parametric import Gaussian, Bernoulli
 import math
 import logging
 
 logger = logging.getLogger(__name__)
 
+def log_prod_mpe_to_cpp(n, c_data_type="double"): 
+    hello = world
 
-def to_cpp(node, c_data_type="double"):
+def to_cpp_mpe(node, c_data_type="double"):
     eval_functions = {}
-
-    def logsumexp_sum_to_cpp(n, c_data_type="double"):
-        operations = []
-        for i, c in enumerate(n.children):
-            operations.append(
-                "result_node_{child_id}+{log_weight:.20}".format(log_weight=math.log(n.weights[i]), child_id=c.id)
-            )
-
-        return "\n{vartype} result_node_{node_id} = logsumexp({num_children},{operation}); //sum node".format(
-            vartype=c_data_type, node_id=n.id, num_children=len(n.children), operation=",".join(operations)
-        )
-
-    def log_prod_to_cpp(n, c_data_type="double"):
-        operation = "+".join(["result_node_" + str(c.id) for c in n.children])
-
-        return "\n{vartype} result_node_{node_id} = {operation}; //prod node".format(
-            vartype=c_data_type, node_id=n.id, operation=operation
-        )
-
-    def gaussian_to_cpp(n, c_data_type="double"):
-        operation = " - log({stdev}) - (pow(x_{scope} - {mean}, 2.0) / (2.0 * pow({stdev}, 2.0))) - K".format(
-            mean=n.mean, stdev=n.stdev, scope=n.scope[0]
-        )
-        return "{vartype} result_node_{node_id} = {operation}; //leaf node gaussian".format(
-            vartype=c_data_type, node_id=n.id, operation=operation
-        )
-
-    eval_functions[Sum] = logsumexp_sum_to_cpp
-    eval_functions[Product] = log_prod_to_cpp
-    eval_functions[Gaussian] = gaussian_to_cpp
-
-    params = ",".join([c_data_type + " x_" + str(s) for s in range(len(node.scope))])
-
-    spn_code = ""
-    for n in reversed(get_nodes_by_type(node)):
-        spn_code += eval_functions[type(n)](n, c_data_type=c_data_type)
-        spn_code += "\n"
-
-    header = """
-    #include <stdarg.h>
     
+def bernoulli_mpe_to_cpp(n, c_data_type="double"):
+    hello = world
+
+def get_header(c_data_type="double"):
+    return """
+    #include <stdlib.h> 
+    #include <stdarg.h>
+    #include <cmath> 
+    #include <vector> 
+    #include <fenv.h>
+
     using namespace std;
     
     const {vartype} K = 0.91893853320467274178032973640561763986139747363778341281;
@@ -88,27 +61,79 @@ def to_cpp(node, c_data_type="double"):
         vartype=c_data_type
     )
 
-    spn_execution_params = ",".join(["data_in[r+%s]" % s for s in range(len(node.scope))])
 
+def to_cpp(node, c_data_type="double"):
+    eval_functions = {}
+
+    def logsumexp_sum_eval_to_cpp(n, c_data_type="double"):
+        operations = []
+        for i, c in enumerate(n.children):
+            operations.append(
+                "result_node[{child_id}]+{log_weight:.20}".format(
+                    log_weight=math.log(n.weights[i]), child_id=c.id
+                )
+            )
+
+        return "result_node[{node_id}] = logsumexp({num_children},{operation}); //sum node".format(
+            vartype=c_data_type, node_id=n.id, num_children=len(n.children), operation=",".join(operations)
+        )
+
+
+    def log_prod_eval_to_cpp(n, c_data_type="double"):
+        operation = "+".join(["result_node[" + str(c.id) + "]" for c in n.children])
+
+        return "result_node[{node_id}] = {operation}; //prod node".format(
+            vartype=c_data_type, node_id=n.id, operation=operation
+        )
+
+    def gaussian_eval_to_cpp(n, c_data_type="double"):
+        operation = " - log({stdev}) - (pow(x[{scope}] - {mean}, 2.0) / (2.0 * pow({stdev}, 2.0))) - K".format(
+            mean=n.mean, stdev=n.stdev, scope=n.scope[0]
+        )
+        return """result_node[{node_id}] = {operation};""".format(
+            vartype=c_data_type, node_id=n.id, operation=operation
+        )
+    
+    def bernoulli_eval_to_cpp(n, c_data_type="double"):
+        return "result_node[{node_id}] = x[{scope}] > 0.5 ? {p_true} : 1 - {p_true}; //leaf node bernoulli".format(
+            vartype=c_data_type, node_id=n.id, scope=n.scope[0], p_true=n.p
+        )
+
+    eval_functions[Sum] = logsumexp_sum_eval_to_cpp
+    eval_functions[Product] = log_prod_eval_to_cpp
+    eval_functions[Gaussian] = gaussian_eval_to_cpp
+    eval_functions[Bernoulli] = bernoulli_eval_to_cpp
+
+    spn_code = ""
+    for n in reversed(get_nodes_by_type(node)):
+        # spn_code += "\t\t"
+        spn_code += eval_functions[type(n)](n, c_data_type=c_data_type)
+        spn_code += "\n\t\t"
+
+    header = get_header(c_data_type=c_data_type)
+    
     function_code = """
-    {vartype} spn({parameters}){{
+    {vartype} spn(const vector<{vartype}>& x, vector<{vartype}>& result_node){{
+        feenableexcept(FE_INVALID | FE_OVERFLOW);
+        result_node.resize({num_nodes});
         {spn_code}
-        return result_node_0;
+        return result_node[0];
     }}
     
-    void spn_many({vartype}* data_in, {vartype}* data_out, size_t rows){{
-        #pragma omp parallel for
+    void spn_many({vartype} data_in[], {vartype}* data_out, size_t rows){{
+        // #pragma omp parallel for
         for (int i=0; i < rows; ++i){{
+            vector<double> result_node; 
             unsigned int r = i * {scope_len};
-            data_out[i] = spn({spn_execution_params});
+            data_out[i] = spn(vector<double>(data_in+r, data_in+r+{scope_len}-1), 
+                              result_node);
+            data_out[i] = result_node[0];                               
         }}
     }}
-        
     """.format(
+        num_nodes=len(get_nodes_by_type(node)),
         vartype=c_data_type,
-        parameters=params,
         spn_code=spn_code,
-        spn_execution_params=spn_execution_params,
         scope_len=len(node.scope),
     )
     return header + function_code

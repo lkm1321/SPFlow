@@ -12,13 +12,23 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def mpe_prod(node, parent_result, data=None, lls_per_node=None, rand_gen=None):
+def mpe_prod(node, 
+             parent_result, 
+             data=None, 
+             lls_per_node=None, 
+             rand_gen=None):
+
     if len(parent_result) == 0:
         return None
     return [parent_result] * len(node.children)
 
 
-def mpe_sum(node, parent_result, data=None, lls_per_node=None, rand_gen=None):
+def mpe_sum(node, 
+            parent_result, 
+            data=None, 
+            lls_per_node=None, 
+            rand_gen=None):
+
     if len(parent_result) == 0:
         return None
 
@@ -71,7 +81,6 @@ def add_node_mpe(node_type, bottom_up_lambda, top_down_lambda, bottom_up_lambda_
         _node_bottom_up_mpe[node_type] = bottom_up_lambda
         _node_bottom_up_mpe_log[node_type] = log_node_bottom_up_mpe
 
-
 def mpe(
     node,
     input_data,
@@ -101,6 +110,10 @@ def mpe(
     instance_ids = np.arange(data.shape[0])
 
     # one pass top down to decide on the max branch until it reaches a leaf, then it fills the nan slot with the mode
-    eval_spn_top_down(node, node_top_down_mpe, parent_result=instance_ids, data=data, lls_per_node=lls_per_node)
+    eval_spn_top_down(node, 
+                      node_top_down_mpe, 
+                      parent_result=instance_ids, 
+                      data=data, 
+                      lls_per_node=lls_per_node)
 
     return data
