@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 
 from spn.algorithms.Inference import log_likelihood
-from spn.io.CPP import get_cpp_function
+from spn.io.CPP import get_cpp_function, to_cpp
 from spn.structure.leaves.parametric.Inference import add_parametric_inference_support
 from spn.structure.leaves.parametric.Parametric import Gaussian
 
@@ -23,6 +23,10 @@ class TestCPP(unittest.TestCase):
 
         A = 0.3 * B + 0.7 * C
 
+        code = to_cpp(A)
+        f = open('tmp2.cpp', 'w')
+        f.write(code)
+        f.close()
         spn_cc_eval_func = get_cpp_function(A)
 
         np.random.seed(17)

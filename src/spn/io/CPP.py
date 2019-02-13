@@ -30,6 +30,7 @@ def get_header(c_data_type="double"):
     #include <cmath> 
     #include <vector> 
     #include <fenv.h>
+    #include <cstdio> 
 
     using namespace std;
     
@@ -115,17 +116,23 @@ def to_cpp(node, c_data_type="double"):
     function_code = """
     {vartype} spn(const vector<{vartype}>& x, vector<{vartype}>& result_node){{
         feenableexcept(FE_INVALID | FE_OVERFLOW);
-        result_node.resize({num_nodes});
+        result_node.resize({num_nodes}, 3.0);
         {spn_code}
         return result_node[0];
     }}
     
-    void spn_many({vartype} data_in[], {vartype}* data_out, size_t rows){{
-        // #pragma omp parallel for
+    void spn_many({vartype}* data_in, {vartype}* data_out, size_t rows){{
+        #pragma omp parallel for
         for (int i=0; i < rows; ++i){{
             vector<double> result_node; 
             unsigned int r = i * {scope_len};
-            data_out[i] = spn(vector<double>(data_in+r, data_in+r+{scope_len}-1), 
+            vector<double> input((size_t) {scope_len}); 
+            // Explicit copy is required for correct operation. 
+            for ( size_t i = 0; i < input.size(); i++)
+            {{
+                input[i] = data_in[i + r];
+            }}
+            data_out[i] = spn(input, 
                               result_node);
             data_out[i] = result_node[0];                               
         }}
