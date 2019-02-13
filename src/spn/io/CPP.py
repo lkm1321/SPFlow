@@ -14,14 +14,31 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def log_prod_mpe_to_cpp(n, c_data_type="double"): 
-    hello = world
 
-def to_cpp_mpe(node, c_data_type="double"):
-    eval_functions = {}
-    
-def bernoulli_mpe_to_cpp(n, c_data_type="double"):
-    hello = world
+
+def histogram_to_cpp(node, leaf_name, vartype):
+    import numpy as np
+
+    inps = np.arange(int(max(node.breaks))).reshape((-1, 1))
+
+    leave_function = """
+    {vartype} {leaf_name}_data[{max_buckets}];
+    inline {vartype} {leaf_name}(uint8_t v_{scope}){{
+        return {leaf_name}_data[v_{scope}];
+    }}
+    """.format(
+        vartype=vartype, leaf_name=leaf_name, max_buckets=len(inps), scope=node.scope[0]
+    )
+
+    leave_init = ""
+
+    for bucket, value in enumerate(np.exp(log_likelihood(node, inps, log_space=False))):
+        leave_init += "\t{leaf_name}_data[{bucket}] = {value};\n".format(
+            leaf_name=leaf_name, bucket=bucket, value=value
+        )
+    leave_init += "\n"
+
+    return leave_function, leave_init
 
 def get_header(c_data_type="double"):
     return """
@@ -62,8 +79,133 @@ def get_header(c_data_type="double"):
         vartype=c_data_type
     )
 
+def mpe_to_cpp(root, c_data_type="double"):
+    eval_functions = {}
+    def mpe_prod_to_cpp(node, c_data_type="dobule"):
+        ## If I have been selected
+        operation = "if (selected[{my_id}]) {{".format(my_id=n.id)
+        ## Select all my children. 
+        for c in node.children:
+            operation += """
+            selected[{child_id}] = true; 
+            max_llh[ {my_id} ] = ll_result[ {my_id} ]; 
+            """.format(
+                my_id = node.id, 
+                child_id = c.id
+                )
+        # No double when no format? 
+        operation += "}\n"
+        return operation
 
-def to_cpp(node, c_data_type="double"):
+    def mpe_sum_to_cpp(node, c_data_type="double"): 
+        ## If I have been selected before (root is always selected)
+        operation = "if (selected[{my_id}]) {{".format(my_id=n.id)
+        for c in node.children:
+            operation += """
+            if ( ll_result[ {child_id} ] > max_llh[ {my_id} ] ) {{
+                winning_nodes[ {my_id} ] = {child_id}; 
+                max_llh[ {my_id} ] = ll_result[{child_id}]; 
+            }} 
+            """.format( my_id=node.id, child_id = c.id)
+        operation += """
+            selected[winning_nodes[{my_id}]] = true; // now select the node that won. 
+        """.format(
+            my_id = node.id
+        )
+        # No double when no format
+        operation += "}\n" # Close if selected. 
+        return operation
+
+    def mpe_gaussian_to_cpp(node, c_data_type="double"):
+        return """if (selected[{my_id}]) {{
+                completion[{input_map}] = {mean};
+            }}
+        """.format( my_id = node.id, input_map = node.scope[0], mean = node.mean )
+
+    def mpe_bernoulli_to_cpp(node, c_data_type="double"):
+        return """if (selected[{my_id}] && isnan(completion[{input_map}]) ) {{
+                completion[{input_map}] = {bernoulli_prob} > 0.5 ? 1.0 : 0.0; 
+            }}
+        """.format( my_id = node.id, input_map = node.scope[0], bernoulli_prob = node.p )
+
+    eval_functions[Product] = mpe_prod_to_cpp
+    eval_functions[Sum] = mpe_sum_to_cpp
+    eval_functions[Gaussian] = mpe_gaussian_to_cpp
+    eval_functions[Bernoulli] = mpe_bernoulli_to_cpp
+
+    all_nodes = get_nodes_by_type(root)
+
+    top_down_code = ""
+    for n in all_nodes:
+        top_down_code += eval_functions[type(n)](n, c_data_type) 
+        top_down_code += "\n\t\t"
+
+    function_code = """
+        void spn_mpe(const vector<{c_data_type}>& evidence, 
+                        vector<{c_data_type}>& completion) {{
+            // Copy the evidence to completion. 
+            completion = evidence; 
+            vector<bool> selected( (size_t) {num_nodes}, false);
+            selected[0] = true; // Root is always selected.  
+
+            // To hold max_llh values for each node 
+            // For sum nodes, we take max over children. 
+            // For prod nodes, -INFTY if not selected, llh of itself if selected. 
+            vector<{c_data_type}> max_llh((size_t) {num_nodes}, -INFINITY);
+
+            // For each node_id (of sum nodes), keep track of winning nodes. 
+            vector<int> winning_nodes((size_t) {num_nodes}, -1);
+
+            // Log likelihood at each node (bottom-up pass)
+            vector<{c_data_type}> ll_result; 
+            // Do a bottom up pass. 
+            {c_data_type} ll = spn(evidence, ll_result); 
+            // Top down code
+            {top_down_code}
+        }}
+
+        void spn_mpe({c_data_type}* evidence, {c_data_type}* completion, size_t data_size)
+        {{
+            vector<double> _evidence(data_size); 
+            vector<double> _completion(data_size); 
+            for (size_t i = 0; i < data_size; i++)
+            {{
+                _evidence[i] = evidence[i]; 
+            }}
+            spn_mpe(_evidence, _completion);
+            for (size_t i = 0; i < data_size; i++)
+            {{
+                completion[i] = _completion[i]; 
+            }}
+        }}
+
+        void spn_mpe_many({c_data_type}* evidence, {c_data_type}* completion, 
+                        size_t data_size, size_t rows){{
+            #pragma omp parallel for
+            for (int i=0; i < rows; ++i){{
+                vector<double> _evidence(data_size); 
+                vector<double> _completion(data_size); 
+                unsigned int r = i * data_size;
+
+                for (size_t j = 0; j < data_size; j++)
+                {{
+                    _evidence[j] = evidence[r + j]; 
+                }}
+                spn_mpe(_evidence, _completion);
+                for (size_t j = 0; j < data_size; j++)
+                {{
+                    completion[r + j] = _completion[j]; 
+                }}
+            }}
+        }}        
+    """.format(
+        top_down_code=top_down_code, 
+        num_nodes = len(all_nodes),
+        c_data_type = c_data_type
+    )
+    return function_code
+
+def eval_to_cpp(node, c_data_type="double"):
     eval_functions = {}
 
     def logsumexp_sum_eval_to_cpp(n, c_data_type="double"):
@@ -96,7 +238,8 @@ def to_cpp(node, c_data_type="double"):
         )
     
     def bernoulli_eval_to_cpp(n, c_data_type="double"):
-        return "result_node[{node_id}] = x[{scope}] > 0.5 ? {p_true} : 1 - {p_true}; //leaf node bernoulli".format(
+        # If isnan, return 1, if not, return proper probability. 
+        return "result_node[{node_id}] = isnan(x[{scope}]) ? 0 : ( x[{scope}] > 0.5 ? log({p_true}) : log(1 - {p_true}) ); //leaf node bernoulli".format(
             vartype=c_data_type, node_id=n.id, scope=n.scope[0], p_true=n.p
         )
 
@@ -111,11 +254,11 @@ def to_cpp(node, c_data_type="double"):
         spn_code += eval_functions[type(n)](n, c_data_type=c_data_type)
         spn_code += "\n\t\t"
 
-    header = get_header(c_data_type=c_data_type)
+    # header = get_header(c_data_type=c_data_type)
     
     function_code = """
     {vartype} spn(const vector<{vartype}>& x, vector<{vartype}>& result_node){{
-        feenableexcept(FE_INVALID | FE_OVERFLOW);
+        // feenableexcept(FE_INVALID | FE_OVERFLOW);
         result_node.resize({num_nodes}, 3.0);
         {spn_code}
         return result_node[0];
@@ -143,15 +286,26 @@ def to_cpp(node, c_data_type="double"):
         spn_code=spn_code,
         scope_len=len(node.scope),
     )
-    return header + function_code
+    return function_code
 
+def generate_cpp_code(node, c_data_type="double", outfile=None): 
+    code = get_header(c_data_type) \
+        + eval_to_cpp(node, c_data_type) \
+        + mpe_to_cpp(node, c_data_type)
+    if outfile: 
+        f = open(outfile, 'w')
+        f.write(code)
+        f.close()
+    return code
 
-def get_cpp_function(node):
-    c_code = to_cpp(node, c_data_type="double")
+def setup_cpp_bridge(node):
+    c_code = generate_cpp_code(node, c_data_type="double")
     import cppyy
 
     cppyy.cppdef(c_code)
     # logger.info(c_code)
+
+def get_cpp_function(node):
     from cppyy.gbl import spn_many
 
     import numpy as np
@@ -163,41 +317,41 @@ def get_cpp_function(node):
 
     return python_eval_func
 
+def get_cpp_mpe_function(node):
+    from cppyy.gbl import spn_mpe_many
 
-_leaf_to_cpp = {}
-
-
-def register_spn_to_cpp(leaf_type, func):
-    _leaf_to_cpp[leaf_type] = func
-
-
-def histogram_to_cpp(node, leaf_name, vartype):
     import numpy as np
 
-    inps = np.arange(int(max(node.breaks))).reshape((-1, 1))
+    def python_mpe_func(data):
+        results = np.zeros((data.shape[0], data.shape[1]))
+        spn_mpe_many(data, results, data.shape[1]. data.shape[0])
+        return results
 
-    leave_function = """
-    {vartype} {leaf_name}_data[{max_buckets}];
-    inline {vartype} {leaf_name}(uint8_t v_{scope}){{
-        return {leaf_name}_data[v_{scope}];
-    }}
-    """.format(
-        vartype=vartype, leaf_name=leaf_name, max_buckets=len(inps), scope=node.scope[0]
-    )
+    return python_mpe_func
 
-    leave_init = ""
-
-    for bucket, value in enumerate(np.exp(log_likelihood(node, inps, log_space=False))):
-        leave_init += "\t{leaf_name}_data[{bucket}] = {value};\n".format(
-            leaf_name=leaf_name, bucket=bucket, value=value
-        )
-    leave_init += "\n"
-
-    return leave_function, leave_init
 
 
 # register_spn_to_cpp(Histogram, histogram_to_cpp)
 
+def generate_native_executable(spn, cppfile="/tmp/spn.cpp", nativefile="/tmp/spn.o"):
+    code = generate_cpp_code(spn, cppfile)
+
+    nativefile_fast = nativefile + "_fastmath"
+
+    return (
+        subprocess.check_output(
+            ["g++", "-O3", "--std=c++11", "-o", nativefile, cppfile], stderr=subprocess.STDOUT
+        ).decode("utf-8"),
+        subprocess.check_output(
+            ["g++", "-O3", "-ffast-math", "--std=c++11", "-o", nativefile_fast, cppfile], stderr=subprocess.STDOUT
+        ).decode("utf-8"),
+        code,
+    )
+
+_leaf_to_cpp = {}
+
+def register_spn_to_cpp(leaf_type, func):
+    _leaf_to_cpp[leaf_type] = func
 
 def to_cpp2(node):
     vartype = "double"
@@ -298,24 +452,4 @@ int main()
         leaves_functions=leaves_functions,
         scope_size=len(node.scope),
         init_code=init_code,
-    )
-
-
-def generate_native_executable(spn, cppfile="/tmp/spn.cpp", nativefile="/tmp/spnexe"):
-    code = to_cpp(spn)
-
-    text_file = open(cppfile, "w")
-    text_file.write(code)
-    text_file.close()
-
-    nativefile_fast = nativefile + "_fastmath"
-
-    return (
-        subprocess.check_output(
-            ["g++", "-O3", "--std=c++11", "-o", nativefile, cppfile], stderr=subprocess.STDOUT
-        ).decode("utf-8"),
-        subprocess.check_output(
-            ["g++", "-O3", "-ffast-math", "--std=c++11", "-o", nativefile_fast, cppfile], stderr=subprocess.STDOUT
-        ).decode("utf-8"),
-        code,
     )
