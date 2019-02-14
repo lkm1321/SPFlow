@@ -20,7 +20,7 @@ def mpe_prod(node,
 
     if len(parent_result) == 0:
         return None
-    print(parent_result)
+    # print(parent_result)
 
     return [parent_result] * len(node.children)
 
@@ -45,7 +45,7 @@ def mpe_sum(node,
 
     for i, c in enumerate(node.children):
         children_row_ids.append(parent_result[max_child_branches == i])
-    print(node.id)
+    # print(node.id)
     # print(children_row_ids)
     return children_row_ids
 

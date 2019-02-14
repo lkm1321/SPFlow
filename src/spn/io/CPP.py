@@ -51,9 +51,9 @@ def get_header(c_data_type="double"):
 
     using namespace std;
     
-    const {vartype} K = 0.91893853320467274178032973640561763986139747363778341281;
+    const {c_data_type} K = 0.91893853320467274178032973640561763986139747363778341281;
 
-    {vartype} logsumexp(size_t count, ...){{
+    {c_data_type} logsumexp(size_t count, ...){{
         va_list args;
         va_start(args, count);
         double max_val = va_arg(args, double);
@@ -73,10 +73,27 @@ def get_header(c_data_type="double"):
             result += exp(num - max_val);
         }}
         va_end(args);
-        return ({vartype})(max_val + log(result));
+        return ({c_data_type})(max_val + log(result));
     }}
+
+    void spn_mpe(const vector<{c_data_type}>& evidence, 
+                 vector<{c_data_type}>& completion);
+
+    void spn_mpe({c_data_type}* evidence, 
+                 {c_data_type}* completion, 
+                 size_t data_size);
+
+    void spn_mpe_many({c_data_type}* evidence, {c_data_type}* completion, 
+                    size_t data_size, size_t rows);
+
+    {c_data_type} spn(const vector<{c_data_type}>& x, 
+                vector<{c_data_type}>& result_node, 
+                vector<vector<{c_data_type}>>& lls_per_node);
+
+    void spn_many({c_data_type}* data_in, {c_data_type}* data_out, size_t rows);
+
     """.format(
-        vartype=c_data_type
+        c_data_type=c_data_type
     )
 
 def mpe_to_cpp(root, c_data_type="double"):
@@ -102,11 +119,15 @@ def mpe_to_cpp(root, c_data_type="double"):
         operation = "if (selected[{my_id}]) {{".format(my_id=n.id)
         for i, c in enumerate(node.children):
             operation += """
-            if ( ll_result[ {child_id} ] + {node_weight}  > max_llh[ {my_id} ] ) {{
+            if ( ll_result[ {child_id} ] + {node_weight:.20}  > max_llh[ {my_id} ] ) {{
                 winning_nodes[ {my_id} ] = {child_id}; 
-                max_llh[ {my_id} ] = ll_result[{child_id}] + {node_weight} ; 
+                max_llh[ {my_id} ] = ll_result[{child_id}] + {node_weight:.20} ; 
             }} 
-            """.format( my_id=node.id, child_id = c.id, node_weight=node.weights[i])
+            """.format( 
+                my_id=node.id, 
+                child_id = c.id, 
+                node_weight=math.log(node.weights[i]) 
+            )
         operation += """
             selected[winning_nodes[{my_id}]] = true; // now select the node that won. 
         """.format(
@@ -123,10 +144,11 @@ def mpe_to_cpp(root, c_data_type="double"):
         """.format( my_id = node.id, input_map = node.scope[0], mean = node.mean )
 
     def mpe_bernoulli_to_cpp(node, c_data_type="double"):
+        completion_val = float( int(node.p > 0.5 ) )
         return """if (selected[{my_id}] && isnan(completion[{input_map}]) ) {{
-                completion[{input_map}] = {bernoulli_prob} > 0.5 ? 1.0 : 0.0; 
+                completion[{input_map}] = {completion_val}; 
             }}
-        """.format( my_id = node.id, input_map = node.scope[0], bernoulli_prob = node.p )
+        """.format( my_id = node.id, input_map = node.scope[0], completion_val=completion_val )
 
     eval_functions[Product] = mpe_prod_to_cpp
     eval_functions[Sum] = mpe_sum_to_cpp
@@ -138,13 +160,13 @@ def mpe_to_cpp(root, c_data_type="double"):
     top_down_code = ""
     for n in all_nodes:
         top_down_code += eval_functions[type(n)](n, c_data_type)
-        top_down_code += """
-            for (size_t n_idx = 0; n_idx < {num_nodes}; n_idx++)
-            {{
-                printf(\"%d\", selected[n_idx] ? 1 : 0); 
-            }}
-            printf(\"\\n\");
-        """.format(num_nodes = len(all_nodes))
+        # top_down_code += """
+        #     for (size_t n_idx = 0; n_idx < {num_nodes}; n_idx++)
+        #     {{
+        #         printf(\"%d\", selected[n_idx] ? 1 : 0); 
+        #     }}
+        #     printf(\"\\n\");
+        # """.format(num_nodes = len(all_nodes))
         top_down_code += "\n\t\t"
 
     function_code = """
@@ -220,7 +242,7 @@ def eval_to_cpp(node, c_data_type="double"):
         operations = []
         for i, c in enumerate(n.children):
             operations.append(
-                "result_node[{child_id}]+{log_weight:.20}".format(
+                "result_node[{child_id}]+{log_weight:.40}".format(
                     log_weight=math.log(n.weights[i]), child_id=c.id
                 )
             )
@@ -273,7 +295,9 @@ def eval_to_cpp(node, c_data_type="double"):
     # header = get_header(c_data_type=c_data_type)
     
     function_code = """
-    {vartype} spn(const vector<{vartype}>& x, vector<{vartype}>& result_node, vector<vector<{vartype}>>& lls_per_node){{
+    {vartype} spn(const vector<{vartype}>& x, 
+                vector<{vartype}>& result_node, 
+                vector<vector<{vartype}>>& lls_per_node){{
         // feenableexcept(FE_INVALID | FE_OVERFLOW);
         // 3.0 is just a temporary number. 
         result_node.resize({num_nodes}, 3.0);
@@ -288,17 +312,23 @@ def eval_to_cpp(node, c_data_type="double"):
         for (int i=0; i < rows; ++i){{
             vector<double> result_node; 
             vector<vector<double>> lls_per_node; 
-            unsigned int r = i * {scope_len};
-            vector<double> input((size_t) {scope_len}); 
+
+            // data_in is rows by num_input
+            unsigned int r = i * {num_input};
+            
+            vector<double> input((size_t) {num_input}); 
             // Explicit copy is required for correct operation. 
             for ( size_t i = 0; i < input.size(); i++)
             {{
                 input[i] = data_in[i + r];
             }}
             spn(input, result_node, lls_per_node);
+
+            // data_out is rows by num_nodes
+            unsigned int r2 = i * {num_nodes}; 
             for ( size_t i = 0; i < result_node.size(); i++)
             {{
-                data_out[i + r] = result_node[i]; 
+                data_out[i + r2] = result_node[i]; 
             }}
         }}
     }}
@@ -306,7 +336,7 @@ def eval_to_cpp(node, c_data_type="double"):
         num_nodes=len(get_nodes_by_type(node)),
         vartype=c_data_type,
         spn_code=spn_code,
-        scope_len=len(node.scope),
+        num_input=len(node.scope)
     )
     return function_code
 
@@ -334,20 +364,14 @@ def get_cpp_function(node):
 
     def python_eval_func(data):
         num_nodes = len(get_nodes_by_type(node))
+        # np.ascontiguousarray(data, dtype='float32')
+        # results = np.zeros( shape= (data.shape[0], num_nodes), dtype='float32')
+        # np.ascontiguousarray(results, dtype='float32')
 
         results = []
-
         for _ in range(num_nodes):
             results += np.zeros( shape= (data.shape[0]), dtype='float32').tolist()
         results = np.array(results).reshape( (data.shape[0], num_nodes) )
-        # results = np.zeros( shape=(data.shape[0]* num_nodes), dtype='float32')
-        # This puts stuff on continuous memory for Cpp to read. 
-        # results = np.array( results.tolist() ).reshape( (data.shape[0], num_nodes) )
-
-        # print(type(data))
-        # print(type(results))
-        # print(data.shape)
-        # print(results.shape)
         spn_many(data, results, results.shape[0])
         return results
 

@@ -35,7 +35,7 @@ class TestCPP(unittest.TestCase):
     #         setup_cpp_bridge(A)
     #         spn_cc_eval_func_bernoulli = get_cpp_function(A)
 
-    #     num_data = 10
+    #     num_data = 200000
     #     # np.random.seed(15)
     #     data = np.random.binomial(1, 0.3, size=(num_data)).astype('float32').tolist() \
     #          + np.random.binomial(1, 0.3, size=(num_data)).astype('float32').tolist()
@@ -54,111 +54,106 @@ class TestCPP(unittest.TestCase):
     #         print("pyl: {val}".format(val = py_ll[i]))
     #         print("pyy: {val}".format(val = lls_matrix[i, :]) )
     #         print("cpp: {val}\n".format(val = c_ll[i, :] ) )
-    #         # self.assertAlmostEqual(lls_matrix[i, 0], c_ll[i, 0])
+    #         for j in range(lls_matrix.shape[1]):
+    #             self.assertAlmostEqual(lls_matrix[i, j], c_ll[i, j])
 
-    # def test_binary_mpe(self):
-    #     D = Bernoulli(p=0.2, scope=[0])
-    #     E = Bernoulli(p=0.6, scope=[1])
-    #     F = Bernoulli(p=0.4, scope=[0])
-    #     G = Bernoulli(p=0.7, scope=[1])
-    #     H = Bernoulli(p=0.2, scope=[2])
-    #     I = Bernoulli(p=0.2, scope=[2])
+    def test_binary_mpe(self):
+        # D = Bernoulli(p=0.2, scope=[0])
+        # E = Bernoulli(p=0.6, scope=[1])
+        # F = Bernoulli(p=0.4, scope=[0])
+        # G = Bernoulli(p=0.7, scope=[1])
+
+        # B = D * E
+        # C = F * G
+
+        # A = 0.3 * B + 0.7 * C
+
+        A = 0.4 * (Bernoulli(p=0.8, scope=0) *
+                    (0.3 * (Bernoulli(p=0.7, scope=1) *
+                            Bernoulli(p=0.6, scope=2))
+                    + 0.7 * (Bernoulli(p=0.5, scope=1) *
+                            Bernoulli(p=0.4, scope=2)))) \
+            + 0.6 * (Bernoulli(p=0.8, scope=0) *
+                    Bernoulli(p=0.7, scope=1) *
+                    Bernoulli(p=0.6, scope=2))
+        import pickle
+        with open('spn_small.bin', 'wb') as f:
+            pickle.dump(A, f)
+
+        num_inputs = len(A.scope)
+        setup_cpp_bridge(A)
+
+        num_data = 20000
+        # np.random.seed(15)
+
+        evidence_data = []
+
+        # need to use tolist and concatenate for memory to be contiguous. 
+        for _ in range(num_inputs): 
+            evidence_data += np.random.binomial(1, 0.3, size=(num_data)).astype('float32').tolist() 
+        evidence_data = np.array(evidence_data).reshape((-1, num_inputs))
+
+        for i in range(evidence_data.shape[0]):
+            drop_data = np.random.binomial(evidence_data.shape[1] - 1, 0.5)
+            evidence_data[i, drop_data] = np.nan
+
+        from cppyy.gbl import spn_mpe_many
+        cc_completion = np.zeros_like(evidence_data)
+        spn_mpe_many(evidence_data, cc_completion, evidence_data.shape[1], evidence_data.shape[0])        
+        # print( [evidence_data, cc_completion] )
+
+        py_completion = mpe(A, evidence_data)
+        # for i in range(num_data):
+        #     print( evidence_data[i, :] )
+        #     print( cc_completion[i, :] )
+        #     print( py_completion[i, :] )
+        #     print("\n")
+        # print(cc_completion)
+        # print(py_completion)
+        self.assertTrue( np.allclose(py_completion, cc_completion) )
+
+
+        
+    # def test_bcpp(self):
+    #     D = Gaussian(mean=20.0, stdev=5.0, scope=[0])
+    #     E = Gaussian(mean=30.0, stdev=5.0, scope=[1])
+    #     F = Gaussian(mean=40.0, stdev=5.0, scope=[0])
+    #     G = Gaussian(mean=50.0, stdev=5.0, scope=[1])
 
     #     B = D * E
-    #     C = F * G 
-    #     # J = G * H 
-    #     # K = G * I
+    #     C = F * G
 
-    #     # D2 = Bernoulli(p=0.2, scope=[3])
-    #     # E2 = Bernoulli(p=0.6, scope=[4])
-    #     # F2 = Bernoulli(p=0.4, scope=[3])
-    #     # G2 = Bernoulli(p=0.7, scope=[4])
-    #     # H2 = Bernoulli(p=0.2, scope=[5])
-    #     # I2 = Bernoulli(p=0.2, scope=[5])
+    #     A = 0.3 * B + 0.7 * C
 
-    #     # B2 = D2 * E2 * H2
-    #     # C2 = F2 * G2 * I2
-
-    #     A1 = 0.3 * B + 0.7 * H
-    #     A2 = 0.7 * C + 0.3 * I
-
-    #     A = A1 * A2
-
-    #     plot_spn(A, fname="spn.png")
-
-    #     import pickle
-    #     with open('spn_small.bin', 'wb') as f:
-    #         pickle.dump(A, f)        
-
+    #     spn_cc_eval_func_gaussian = None
     #     try:
-    #         spn_cc_mpe_func_bernoulli = get_cpp_mpe_function(A)
+    #         spn_cc_eval_func_gaussian = get_cpp_function(A)
     #     except:
     #         setup_cpp_bridge(A)
-    #         spn_cc_mpe_func_bernoulli = get_cpp_mpe_function(A)
+    #         spn_cc_eval_func_gaussian = get_cpp_function(A)
 
-    #     num_tests = 2
-    #     np.random.seed(15)
-    #     evidence_data = np.random.binomial(1, 0.3, size=(num_tests)).astype('float32').tolist() \
-    #                   + np.random.binomial(1, 0.8, size=(num_tests)).astype('float32').tolist() \
-    #                   + np.random.binomial(1, 0.7, size=(num_tests)).astype('float32').tolist() 
-    #                 #   + np.random.binomial(1, 0.6, size=(num_tests)).astype('float32').tolist() \
-    #                 #   + np.random.binomial(1, 0.5, size=(num_tests)).astype('float32').tolist() \
-    #                 #   + np.random.binomial(1, 0.4, size=(num_tests)).astype('float32').tolist() 
+    #     num_data = 20
+    #     np.random.seed(17)
+    #     data = np.random.normal(10, 0.01, size=num_data).tolist() \
+    #         + np.random.normal(30, 10, size=num_data).tolist()
+    #     data = np.array(data).reshape((-1, 2))
 
-    #     drop_data = np.random.binomial(1, 0.5, size=(num_tests, 3)).astype('bool') 
+    #     lls_matrix = np.zeros(shape=(data.shape[0], len(get_nodes_by_type(A) )), 
+    #                             dtype='float32')
 
-    #     evidence_data = np.array(evidence_data).reshape((-1, 3))
-    #     evidence_data[drop_data] = np.nan
-    #     # drop_idx = np.array( [0, 1] * (num_tests//2) ).reshape((-1, 1))
-    #     # evidence_data[:, drop_idx] = np.nan
-    #     # evidence_data[:, 0] = np.nan
-    #     # evidence_data[evidence_data == 2] = 1
-        
-    #     # print(type(evidence_data[0, :]))
-    #     # print(type(evidence_data[0, 0]))
-    #     # print(evidence_data.shape)
-    #     from cppyy.gbl import spn_mpe_many
-    #     cc_completion = np.zeros_like(evidence_data)
-    #     spn_mpe_many(evidence_data, cc_completion, evidence_data.shape[1], evidence_data.shape[0])        
-    #     print( [evidence_data, cc_completion] )
+    #     py_ll = log_likelihood(A, data, lls_matrix = lls_matrix)
 
-    #     py_completion = mpe(A, evidence_data)
-    #     # print(cc_completion)
-    #     # print(py_completion)
-    #     self.assertTrue( np.allclose(py_completion, cc_completion) )
+    #     c_ll = spn_cc_eval_func_gaussian(data)
 
 
-        
-    def test_bcpp(self):
-        D = Gaussian(mean=20.0, stdev=5.0, scope=[0])
-        E = Gaussian(mean=30.0, stdev=5.0, scope=[1])
-        F = Gaussian(mean=40.0, stdev=5.0, scope=[0])
-        G = Gaussian(mean=50.0, stdev=5.0, scope=[1])
+    #     for i in range(lls_matrix.shape[0]):
+    #         print("pyl: {val}".format(val = py_ll[i]))
+    #         print("pyy: {val}".format(val = lls_matrix[i, :]) )
+    #         print("cpp: {val}\n".format(val = c_ll[i, :] ) )
 
-        B = D * E
-        C = F * G
+    #         for j in range(lls_matrix.shape[1]): 
+    #             self.assertAlmostEqual(lls_matrix[i, j], c_ll[i, j], places=4)
 
-        A = 0.3 * B + 0.7 * C
-
-        spn_cc_eval_func_gaussian = None
-        try:
-            spn_cc_eval_func_gaussian = get_cpp_function(A)
-        except:
-            setup_cpp_bridge(A)
-            spn_cc_eval_func_gaussian = get_cpp_function(A)
-
-        np.random.seed(17)
-        data = np.random.normal(10, 0.01, size=200000).tolist() + np.random.normal(30, 10, size=200000).tolist()
-        data = np.array(data).reshape((-1, 2))
-        print(type(data))
-
-        print(data)
-        py_ll = log_likelihood(A, data)
-
-        c_ll = spn_cc_eval_func_gaussian(data)
-
-        for i in range(py_ll.shape[0]):
-            self.assertAlmostEqual(py_ll[i, 0], c_ll[i, 0])
 
 
 if __name__ == "__main__":
