@@ -51,33 +51,8 @@ def get_header(num_inputs, num_nodes, c_data_type="double", header_guard=False):
 
     using namespace std;
 
-    #define SPN_NUM_INPUTS {num_inputs}; 
-    #define SPN_NUM_NODES {num_nodes}; 
-
-    const {c_data_type} K = 0.91893853320467274178032973640561763986139747363778341281;
-
-    {c_data_type} logsumexp(size_t count, ...){{
-        va_list args;
-        va_start(args, count);
-        double max_val = va_arg(args, double);
-        for (int i = 1; i < count; ++i) {{
-            double num = va_arg(args, double);
-            if(num > max_val){{
-                max_val = num;
-            }}
-        }}
-        va_end(args);
-
-        double result = 0.0;
-
-        va_start(args, count);
-        for (int i = 0; i < count; ++i) {{
-            double num = va_arg(args, double);
-            result += exp(num - max_val);
-        }}
-        va_end(args);
-        return ({c_data_type})(max_val + log(result));
-    }}
+    #define SPN_NUM_INPUTS {num_inputs}
+    #define SPN_NUM_NODES {num_nodes}
 
     void spn_mpe(const vector<{c_data_type}>& evidence, 
                  vector<{c_data_type}>& completion);
@@ -304,6 +279,31 @@ def eval_to_cpp(node, c_data_type="double"):
     # header = get_header(c_data_type=c_data_type)
     
     function_code = """
+    const {c_data_type} K = 0.91893853320467274178032973640561763986139747363778341281;
+
+    {c_data_type} logsumexp(size_t count, ...){{
+        va_list args;
+        va_start(args, count);
+        double max_val = va_arg(args, double);
+        for (int i = 1; i < count; ++i) {{
+            double num = va_arg(args, double);
+            if(num > max_val){{
+                max_val = num;
+            }}
+        }}
+        va_end(args);
+
+        double result = 0.0;
+
+        va_start(args, count);
+        for (int i = 0; i < count; ++i) {{
+            double num = va_arg(args, double);
+            result += exp(num - max_val);
+        }}
+        va_end(args);
+        return ({c_data_type})(max_val + log(result));
+    }}
+
     {vartype} spn(const vector<{vartype}>& x, 
                 vector<{vartype}>& result_node){{
         // feenableexcept(FE_INVALID | FE_OVERFLOW);
@@ -338,6 +338,7 @@ def eval_to_cpp(node, c_data_type="double"):
         }}
     }}
     """.format(
+        c_data_type=c_data_type, 
         num_nodes=len(get_nodes_by_type(node)),
         vartype=c_data_type,
         spn_code=spn_code,
