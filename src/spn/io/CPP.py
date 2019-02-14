@@ -51,8 +51,8 @@ def get_header(num_inputs, num_nodes, c_data_type="double", header_guard=False):
 
     using namespace std;
 
-    #define NUM_INPUTS {num_inputs}; 
-    #define NUM_NODES {num_nodes}; 
+    #define SPN_NUM_INPUTS {num_inputs}; 
+    #define SPN_NUM_NODES {num_nodes}; 
 
     const {c_data_type} K = 0.91893853320467274178032973640561763986139747363778341281;
 
@@ -90,8 +90,9 @@ def get_header(num_inputs, num_nodes, c_data_type="double", header_guard=False):
                     size_t data_size, size_t rows);
 
     {c_data_type} spn(const vector<{c_data_type}>& x, 
-                vector<{c_data_type}>& result_node, 
-                vector<vector<{c_data_type}>>& lls_per_node);
+                vector<{c_data_type}>& result_node);
+    
+    {c_data_type} spn({c_data_type}* x, {c_data_type}* result_node);
 
     void spn_many({c_data_type}* data_in, {c_data_type}* data_out, size_t rows);
 
@@ -201,9 +202,8 @@ def mpe_to_cpp(root, c_data_type="double"):
 
             // Log likelihood at each node (bottom-up pass)
             vector<{c_data_type}> ll_result; 
-            vector<vector<{c_data_type}>> lls_per_node;  
             // Do a bottom up pass. 
-            {c_data_type} ll = spn(evidence, ll_result, lls_per_node); 
+            {c_data_type} ll = spn(evidence, ll_result); 
             // Top down code
             {top_down_code}
         }}
@@ -270,11 +270,6 @@ def eval_to_cpp(node, c_data_type="double"):
 
     def log_prod_eval_to_cpp(n, c_data_type="double"):
         operation = "+".join(["result_node[" + str(c.id) + "]" for c in n.children])
-        # lls_string = ""
-        # for c in n.children: 
-        #     lls_string += "lls_per_node[{my_id}][{child_id}] = result_node[{child_id}];".format(
-        #         my_id= n.id, child_id= c.id
-        #         )
 
         return "result_node[{node_id}] = {operation}; //prod node".format(
             vartype=c_data_type, node_id=n.id, operation=operation
@@ -310,13 +305,10 @@ def eval_to_cpp(node, c_data_type="double"):
     
     function_code = """
     {vartype} spn(const vector<{vartype}>& x, 
-                vector<{vartype}>& result_node, 
-                vector<vector<{vartype}>>& lls_per_node){{
+                vector<{vartype}>& result_node){{
         // feenableexcept(FE_INVALID | FE_OVERFLOW);
         // 3.0 is just a temporary number. 
         result_node.resize({num_nodes}, 3.0);
-        lls_per_node.resize({num_nodes}); 
-        for (size_t i = 0; i < {num_nodes}; i++) lls_per_node[i].resize({num_nodes}, 3.0); 
         {spn_code}
         return result_node[0];
     }}
@@ -325,7 +317,6 @@ def eval_to_cpp(node, c_data_type="double"):
         #pragma omp parallel for
         for (int i=0; i < rows; ++i){{
             vector<double> result_node; 
-            vector<vector<double>> lls_per_node; 
 
             // data_in is rows by num_input
             unsigned int r = i * {num_input};
@@ -336,7 +327,7 @@ def eval_to_cpp(node, c_data_type="double"):
             {{
                 input[i] = data_in[i + r];
             }}
-            spn(input, result_node, lls_per_node);
+            spn(input, result_node);
 
             // data_out is rows by num_nodes
             unsigned int r2 = i * {num_nodes}; 
