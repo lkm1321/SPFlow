@@ -40,8 +40,8 @@ def histogram_to_cpp(node, leaf_name, vartype):
 
     return leave_function, leave_init
 
-def get_header(c_data_type="double"):
-    return """
+def get_header(c_data_type="double", header_guard=False):
+    header = """
     #include <stdlib.h> 
     #include <stdarg.h>
     #include <cmath> 
@@ -95,6 +95,15 @@ def get_header(c_data_type="double"):
     """.format(
         c_data_type=c_data_type
     )
+
+    if header_guard:
+        header = """
+    #ifndef __SPN_H
+    #define __SPN_H
+        """ + header + """
+    #endif
+        """
+    return header
 
 def mpe_to_cpp(root, c_data_type="double"):
     eval_functions = {}
@@ -349,6 +358,19 @@ def generate_cpp_code(node, c_data_type="double", outfile=None):
         f.write(code)
         f.close()
     return code
+
+def generate_cpp_code_with_header(node, c_data_type="double", filename="spn"):
+    header = get_header(c_data_type=c_data_type, header_guard=True)
+
+    code = """
+    #include \"{header_file_name}\"
+    """.format(header_file_name = filename + ".h")     
+    code += eval_to_cpp(node, c_data_type=c_data_type) 
+    code += mpe_to_cpp(node, c_data_type=c_data_type)
+
+    with open(filename + ".h", 'w') as f_header, open(filename + ".cpp", 'w') as f_code: 
+        f_header.write(header)
+        f_code.write(code)
 
 def setup_cpp_bridge(node):
     c_code = generate_cpp_code(node, c_data_type="double")
