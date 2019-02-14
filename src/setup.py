@@ -14,8 +14,8 @@ with open("../requirements.txt", "r") as fh:
 
 setuptools.setup(
     name="spflow",
-    version="0.0.27",
-    author="Alejandro Molina et al.",
+    version="0.0.27.1",
+    author="Local",
     author_email="molina@cs.tu-darmstadt.de",
     description="Sum Product Flow: An Easy and Extensible Library for Sum-Product Networks",
     long_description=long_description,

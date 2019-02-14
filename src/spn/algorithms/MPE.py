@@ -20,6 +20,8 @@ def mpe_prod(node,
 
     if len(parent_result) == 0:
         return None
+    print(parent_result)
+
     return [parent_result] * len(node.children)
 
 
@@ -34,7 +36,8 @@ def mpe_sum(node,
 
     w_children_log_probs = np.zeros((len(parent_result), len(node.weights)))
     for i, c in enumerate(node.children):
-        w_children_log_probs[:, i] = lls_per_node[parent_result, c.id] + np.log(node.weights[i])
+        w_children_log_probs[:, i] = lls_per_node[parent_result, c.id] \
+                                   + np.log(node.weights[i])
 
     max_child_branches = np.argmax(w_children_log_probs, axis=1)
 
@@ -42,7 +45,8 @@ def mpe_sum(node,
 
     for i, c in enumerate(node.children):
         children_row_ids.append(parent_result[max_child_branches == i])
-
+    print(node.id)
+    # print(children_row_ids)
     return children_row_ids
 
 

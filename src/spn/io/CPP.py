@@ -46,7 +46,7 @@ def get_header(c_data_type="double"):
     #include <stdarg.h>
     #include <cmath> 
     #include <vector> 
-    #include <fenv.h>
+    // # include <fenv.h>
     #include <cstdio> 
 
     using namespace std;
@@ -224,9 +224,11 @@ def eval_to_cpp(node, c_data_type="double"):
                     log_weight=math.log(n.weights[i]), child_id=c.id
                 )
             )
-        operation = ",".join(operations)
         return "result_node[{node_id}] = logsumexp({num_children},{operation}); // sum node".format(
-            vartype=c_data_type, node_id=n.id, num_children=len(n.children), operation=operation
+            vartype=c_data_type, 
+            node_id=n.id, 
+            num_children=len(n.children), 
+            operation=",".join(operations)
         )
 
 
