@@ -40,7 +40,7 @@ def histogram_to_cpp(node, leaf_name, vartype):
 
     return leave_function, leave_init
 
-def get_header(c_data_type="double", header_guard=False):
+def get_header(num_inputs, num_nodes, c_data_type="double", header_guard=False):
     header = """
     #include <stdlib.h> 
     #include <stdarg.h>
@@ -50,7 +50,10 @@ def get_header(c_data_type="double", header_guard=False):
     #include <cstdio> 
 
     using namespace std;
-    
+
+    #define NUM_INPUTS {num_inputs}; 
+    #define NUM_NODES {num_nodes}; 
+
     const {c_data_type} K = 0.91893853320467274178032973640561763986139747363778341281;
 
     {c_data_type} logsumexp(size_t count, ...){{
@@ -93,7 +96,9 @@ def get_header(c_data_type="double", header_guard=False):
     void spn_many({c_data_type}* data_in, {c_data_type}* data_out, size_t rows);
 
     """.format(
-        c_data_type=c_data_type
+        c_data_type=c_data_type,
+        num_inputs = num_inputs,
+        num_nodes = num_nodes
     )
 
     if header_guard:
@@ -350,7 +355,11 @@ def eval_to_cpp(node, c_data_type="double"):
     return function_code
 
 def generate_cpp_code(node, c_data_type="double", outfile=None): 
-    code = get_header(c_data_type) \
+
+    num_input = len(node.scope)
+    num_nodes = len(get_nodes_by_type(node))
+
+    code = get_header(num_input, num_nodes, c_data_type) \
         + eval_to_cpp(node, c_data_type) \
         + mpe_to_cpp(node, c_data_type)
     if outfile: 
@@ -360,7 +369,11 @@ def generate_cpp_code(node, c_data_type="double", outfile=None):
     return code
 
 def generate_cpp_code_with_header(node, c_data_type="double", filename="spn"):
-    header = get_header(c_data_type=c_data_type, header_guard=True)
+
+    num_input = len(node.scope)
+    num_nodes = len(get_nodes_by_type(node))
+
+    header = get_header(num_input, num_nodes, c_data_type=c_data_type, header_guard=True)
 
     code = """
     #include \"{header_file_name}\"
