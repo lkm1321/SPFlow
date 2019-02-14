@@ -100,13 +100,13 @@ def mpe_to_cpp(root, c_data_type="double"):
     def mpe_sum_to_cpp(node, c_data_type="double"): 
         ## If I have been selected before (root is always selected)
         operation = "if (selected[{my_id}]) {{".format(my_id=n.id)
-        for c in node.children:
+        for i, c in enumerate(node.children):
             operation += """
-            if ( ll_result[ {child_id} ] > max_llh[ {my_id} ] ) {{
+            if ( ll_result[ {child_id} ] + {node_weight}  > max_llh[ {my_id} ] ) {{
                 winning_nodes[ {my_id} ] = {child_id}; 
-                max_llh[ {my_id} ] = ll_result[{child_id}]; 
+                max_llh[ {my_id} ] = ll_result[{child_id}] + {node_weight} ; 
             }} 
-            """.format( my_id=node.id, child_id = c.id)
+            """.format( my_id=node.id, child_id = c.id, node_weight=node.weights[i])
         operation += """
             selected[winning_nodes[{my_id}]] = true; // now select the node that won. 
         """.format(
@@ -137,7 +137,14 @@ def mpe_to_cpp(root, c_data_type="double"):
 
     top_down_code = ""
     for n in all_nodes:
-        top_down_code += eval_functions[type(n)](n, c_data_type) 
+        top_down_code += eval_functions[type(n)](n, c_data_type)
+        top_down_code += """
+            for (size_t n_idx = 0; n_idx < {num_nodes}; n_idx++)
+            {{
+                printf(\"%d\", selected[n_idx] ? 1 : 0); 
+            }}
+            printf(\"\\n\");
+        """.format(num_nodes = len(all_nodes))
         top_down_code += "\n\t\t"
 
     function_code = """
@@ -158,8 +165,9 @@ def mpe_to_cpp(root, c_data_type="double"):
 
             // Log likelihood at each node (bottom-up pass)
             vector<{c_data_type}> ll_result; 
+            vector<vector<{c_data_type}>> lls_per_node;  
             // Do a bottom up pass. 
-            {c_data_type} ll = spn(evidence, ll_result); 
+            {c_data_type} ll = spn(evidence, ll_result, lls_per_node); 
             // Top down code
             {top_down_code}
         }}
@@ -216,14 +224,19 @@ def eval_to_cpp(node, c_data_type="double"):
                     log_weight=math.log(n.weights[i]), child_id=c.id
                 )
             )
-
-        return "result_node[{node_id}] = logsumexp({num_children},{operation}); //sum node".format(
-            vartype=c_data_type, node_id=n.id, num_children=len(n.children), operation=",".join(operations)
+        operation = ",".join(operations)
+        return "result_node[{node_id}] = logsumexp({num_children},{operation}); // sum node".format(
+            vartype=c_data_type, node_id=n.id, num_children=len(n.children), operation=operation
         )
 
 
     def log_prod_eval_to_cpp(n, c_data_type="double"):
         operation = "+".join(["result_node[" + str(c.id) + "]" for c in n.children])
+        # lls_string = ""
+        # for c in n.children: 
+        #     lls_string += "lls_per_node[{my_id}][{child_id}] = result_node[{child_id}];".format(
+        #         my_id= n.id, child_id= c.id
+        #         )
 
         return "result_node[{node_id}] = {operation}; //prod node".format(
             vartype=c_data_type, node_id=n.id, operation=operation
@@ -239,7 +252,7 @@ def eval_to_cpp(node, c_data_type="double"):
     
     def bernoulli_eval_to_cpp(n, c_data_type="double"):
         # If isnan, return 1, if not, return proper probability. 
-        return "result_node[{node_id}] = isnan(x[{scope}]) ? 0 : ( x[{scope}] > 0.5 ? log({p_true}) : log(1 - {p_true}) ); //leaf node bernoulli".format(
+        return "result_node[{node_id}] = isnan(x[{scope}]) ? 20.0 : ( x[{scope}] > 0.5 ? log({p_true}) : log(1 - {p_true}) ); //leaf node bernoulli".format(
             vartype=c_data_type, node_id=n.id, scope=n.scope[0], p_true=n.p
         )
 
@@ -248,6 +261,7 @@ def eval_to_cpp(node, c_data_type="double"):
     eval_functions[Gaussian] = gaussian_eval_to_cpp
     eval_functions[Bernoulli] = bernoulli_eval_to_cpp
 
+    num_nodes = len(get_nodes_by_type(node))
     spn_code = ""
     for n in reversed(get_nodes_by_type(node)):
         # spn_code += "\t\t"
@@ -257,9 +271,12 @@ def eval_to_cpp(node, c_data_type="double"):
     # header = get_header(c_data_type=c_data_type)
     
     function_code = """
-    {vartype} spn(const vector<{vartype}>& x, vector<{vartype}>& result_node){{
+    {vartype} spn(const vector<{vartype}>& x, vector<{vartype}>& result_node, vector<vector<{vartype}>>& lls_per_node){{
         // feenableexcept(FE_INVALID | FE_OVERFLOW);
+        // 3.0 is just a temporary number. 
         result_node.resize({num_nodes}, 3.0);
+        lls_per_node.resize({num_nodes}); 
+        for (size_t i = 0; i < {num_nodes}; i++) lls_per_node[i].resize({num_nodes}, 3.0); 
         {spn_code}
         return result_node[0];
     }}
@@ -268,6 +285,7 @@ def eval_to_cpp(node, c_data_type="double"):
         #pragma omp parallel for
         for (int i=0; i < rows; ++i){{
             vector<double> result_node; 
+            vector<vector<double>> lls_per_node; 
             unsigned int r = i * {scope_len};
             vector<double> input((size_t) {scope_len}); 
             // Explicit copy is required for correct operation. 
@@ -275,9 +293,11 @@ def eval_to_cpp(node, c_data_type="double"):
             {{
                 input[i] = data_in[i + r];
             }}
-            data_out[i] = spn(input, 
-                              result_node);
-            data_out[i] = result_node[0];                               
+            spn(input, result_node, lls_per_node);
+            for ( size_t i = 0; i < result_node.size(); i++)
+            {{
+                data_out[i + r] = result_node[i]; 
+            }}
         }}
     }}
     """.format(
@@ -311,8 +331,22 @@ def get_cpp_function(node):
     import numpy as np
 
     def python_eval_func(data):
-        results = np.zeros((data.shape[0], 1))
-        spn_many(data, results, data.shape[0])
+        num_nodes = len(get_nodes_by_type(node))
+
+        results = []
+
+        for _ in range(num_nodes):
+            results += np.zeros( shape= (data.shape[0]), dtype='float32').tolist()
+        results = np.array(results).reshape( (data.shape[0], num_nodes) )
+        # results = np.zeros( shape=(data.shape[0]* num_nodes), dtype='float32')
+        # This puts stuff on continuous memory for Cpp to read. 
+        # results = np.array( results.tolist() ).reshape( (data.shape[0], num_nodes) )
+
+        # print(type(data))
+        # print(type(results))
+        # print(data.shape)
+        # print(results.shape)
+        spn_many(data, results, results.shape[0])
         return results
 
     return python_eval_func
@@ -328,8 +362,6 @@ def get_cpp_mpe_function(node):
         return results
 
     return python_mpe_func
-
-
 
 # register_spn_to_cpp(Histogram, histogram_to_cpp)
 
