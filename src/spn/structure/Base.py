@@ -406,7 +406,7 @@ def eval_spn_top_down(root, eval_functions, all_results=None, parent_result=None
         all_results[node] = result
         if result is not None and not isinstance(node, Leaf):
             assert len(result) == len(node.children), "invalid function result for node %s" % (node.id)
-            for i, node in enumerate(node.children):
-                queue.append((node, result[i]))
+            for i, child in enumerate(node.children):
+                queue.append((child, result[i]))
 
     return all_results[root]
