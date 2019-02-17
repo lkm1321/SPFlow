@@ -136,5 +136,4 @@ def get_marginal_prob(node, input_data, marginal_prob_funcs=_node_marginal_prob)
     for leaf_node in leaf_nodes:
         marginal_prob[:, leaf_node.scope[0]] += leaf_node_prob[:, leaf_node.id] * leaf_node.p
 
-    print(marginal_prob)
     return marginal_prob
