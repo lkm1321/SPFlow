@@ -16,14 +16,14 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def marginal_prob_prod(node, parent_result, data=None, lls_per_node=None, marginal_prob_log=None):
+def marginal_prob_prod(node, parent_result, data=None, lls_per_node=None, leaf_node_prob=None):
     # if len(parent_result) == 0:
     #     return None
     assert len(parent_result) == 1
     return [parent_result] * len(node.children)
 
 
-def marginal_prob_sum(node, parent_result, data=None, lls_per_node=None, marginal_prob_log=None):
+def marginal_prob_sum(node, parent_result, data=None, lls_per_node=None, leaf_node_prob=None):
     # if len(parent_result) == 0:
     #     return None
 
@@ -48,7 +48,7 @@ def marginal_prob_sum(node, parent_result, data=None, lls_per_node=None, margina
         )
     return log_prob_children_selection
 
-def marginal_prob_leaf(node, parent_result, data=None, lls_per_node=None, marginal_prob_log=None):
+def marginal_prob_leaf(node, parent_result, data=None, lls_per_node=None, leaf_node_prob=None):
     # if len(parent_result) == 0:
     #     return None
 
@@ -73,8 +73,8 @@ def marginal_prob_leaf(node, parent_result, data=None, lls_per_node=None, margin
     # print(data_nans)
     # print(parent_result)
 
+    leaf_node_prob[:, node.id] = np.exp(parent_result)
     # This leads to all ones (rightfully so, because it sums over all possible mixture variables)
-    marginal_prob_log[:, node.id] = np.exp(parent_result)
     # marginal_prob_log[:, node.scope ] += np.tile( np.exp(parent_result), (1, len(node.scope) ) )
     # marginal_prob_log[:, node.scope ] += np.tile( np.log(node.p), (parent_result.shape[0], len(node.scope) ) )
 
@@ -87,7 +87,7 @@ _node_marginal_prob = {Product: marginal_prob_prod, Sum: marginal_prob_sum, Bern
 def add_node_sampling(node_type, lambda_func):
     _node_marginal_prob[node_type] = lambda_func
 
-def get_marginal_prob(node, input_data, marginal_prob_funcs=_node_marginal_prob, log_space=False):
+def get_marginal_prob(node, input_data, marginal_prob_funcs=_node_marginal_prob):
     """
     Get marginal probability at unseen input variables given input_data (i.e. the probability of a node being selected)
     """
@@ -111,7 +111,6 @@ def get_marginal_prob(node, input_data, marginal_prob_funcs=_node_marginal_prob,
 
     # Keep track of probability of leaf node selection. 
     leaf_node_prob = np.zeros(shape=(data.shape[0], len(nodes)), dtype='float32')
-    marginal_prob_log = np.zeros(shape=data.shape, dtype='float32')
     # marginal_prob_log[ np.isnan(data) ] = 0.0
 
     eval_spn_top_down(
@@ -120,28 +119,22 @@ def get_marginal_prob(node, input_data, marginal_prob_funcs=_node_marginal_prob,
         parent_result=np.zeros( shape=(data.shape[0], 1) ), 
         data=data, 
         lls_per_node=lls_per_node, 
-        marginal_prob_log=leaf_node_prob
+        leaf_node_prob=leaf_node_prob
     )
 
     leaf_nodes = get_nodes_by_type(node, ntype=Bernoulli)
-    leaf_node_ids = [leaf_node.id for leaf_node in leaf_nodes]
-    leaf_node_scopes = [leaf_node.scope[0] for leaf_node in leaf_nodes]
-    leaf_node_prob = leaf_node_prob[:, leaf_node_ids]
-    print(leaf_node_prob)
-    leaf_node_prob_true = [leaf_node.p * leaf_node_prob_val for (leaf_node, leaf_node_prob_val) in zip(leaf_nodes, leaf_node_prob) ]
+    # leaf_node_ids = [leaf_node.id for leaf_node in leaf_nodes]
+    # leaf_node_scopes = [leaf_node.scope[0] for leaf_node in leaf_nodes]
 
-    leaf_node_prob_true = np.array(leaf_node_prob_true)
-    marginal_prob_log[:, leaf_node_scopes] = leaf_node_prob_true
+    # leaf_node_prob = leaf_node_prob[:, leaf_node_ids]
+    # print(leaf_node_prob)
+    # leaf_node_prob_true = [leaf_node.p * leaf_node_prob_val for (leaf_node, leaf_node_prob_val) in zip(leaf_nodes, leaf_node_prob) ]
+ 
+    marginal_prob = np.zeros(shape=data.shape, dtype='float32')
 
-    # print(data.shape)
-    # bernoulli_prob = np.array( [np.log(leaf_node.p) for leaf_node in get_nodes_by_type(node, ntype=Bernoulli) ] )
-    # print(bernoulli_prob.shape)
-    # marginal_prob_log += 
-    # marginal_prob = np.exp(marginal_prob_log)
-    # print(np.exp(marginal_prob_log))
-    print(marginal_prob_log)
+    # Probability of drawing true at a input node: probability of selecting a mixture component * probability of that mixture component returning true 
+    for leaf_node in leaf_nodes:
+        marginal_prob[:, leaf_node.scope[0]] += leaf_node_prob[:, leaf_node.id] * leaf_node.p
 
-    if log_space:
-        return marginal_prob_log
-    else:
-        return marginal_prob_log
+    print(marginal_prob)
+    return marginal_prob

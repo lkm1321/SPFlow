@@ -41,14 +41,25 @@ def discrete_likelihood(node, data=None, dtype=np.float64):
     probs, marg_ids, observations = leaf_marginalized_likelihood(node, data, dtype)
     scipy_obj, params = get_scipy_obj_params(node)
     probs[~marg_ids] = scipy_obj.pmf(observations, **params)
+    # print(params)
     probs[probs == 1.0] = 0.999999999
     probs[probs == 0.0] = 0.000000001
     return probs
 
 
-bernoulli_likelihood = discrete_likelihood
+# bernoulli_likelihood = discrete_likelihood
 geometric_likelihood = discrete_likelihood
 
+## In this version, the value in data is the probability of being true. 
+def bernoulli_likelihood(node, data=None, dtype=np.float64): 
+    probs, marg_ids, observations = leaf_marginalized_likelihood(node, data, dtype)
+    probs[marg_ids] = 1.0
+    probs[~marg_ids] = node.p * observations + (1 - node.p) * (np.ones(shape=observations.shape) - observations) 
+    probs[probs == 1.0] = 0.999999999
+    probs[probs == 0.0] = 0.000000001
+    # print(probs)
+
+    return probs
 
 def categorical_likelihood(node, data=None, dtype=np.float64):
     probs, marg_ids, observations = leaf_marginalized_likelihood(node, data, dtype)
