@@ -167,7 +167,7 @@ def optimize_tf_graph(
             # Build mean
             epoch_loss /= data.shape[0]
 
-            logger.debug("Epoch: %s, Loss: %s", i, epoch_loss)
+            print("Epoch: %s, Loss: %s", i, epoch_loss)
             loss_list.append(epoch_loss)
 
         tf_graph_to_spn(variable_dict)
