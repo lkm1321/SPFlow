@@ -105,6 +105,7 @@ def optimize_tf(
     batch_size: int = None,
     optimizer: tf.train.Optimizer = None,
     return_loss=False,
+    loss_threshold = None
 ) -> Union[Tuple[Node, List[float]], Node]:
     """
     Optimize weights of an SPN with a tensorflow stochastic gradient descent optimizer, maximizing the likelihood
@@ -128,7 +129,14 @@ def optimize_tf(
     print('Optimizing...')
     # Optimize the tensorflow graph
     loss_list = optimize_tf_graph(
-        tf_graph, variable_dict, data_placeholder, data, epochs=epochs, batch_size=batch_size, optimizer=optimizer
+        tf_graph, 
+        variable_dict, 
+        data_placeholder, 
+        data, 
+        epochs=epochs, 
+        batch_size=batch_size, 
+        optimizer=optimizer,
+        loss_threshold=loss_threshold
     )
 
     # Return loss as well if flag is set

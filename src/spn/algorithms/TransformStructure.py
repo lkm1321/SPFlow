@@ -69,6 +69,7 @@ def Prune(node, threshold=-1.0):
             if is_sum and threshold > 0.0: 
                 if n.weights[i] < threshold:
                     del n.children[i]
+                    del n.weights[i]
 
             i += 1
         if is_sum and i > 0:
