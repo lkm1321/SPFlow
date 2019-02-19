@@ -121,9 +121,11 @@ def optimize_tf(
     # Make sure, that the passed SPN is not modified
     spn_copy = Copy(spn)
 
+    print('Compiling to TF...')
     # Compile the SPN to a static tensorflow graph
     tf_graph, data_placeholder, variable_dict = spn_to_tf_graph(spn_copy, data, batch_size)
 
+    print('Optimizing...')
     # Optimize the tensorflow graph
     loss_list = optimize_tf_graph(
         tf_graph, variable_dict, data_placeholder, data, epochs=epochs, batch_size=batch_size, optimizer=optimizer
@@ -137,7 +139,7 @@ def optimize_tf(
 
 
 def optimize_tf_graph(
-    tf_graph, variable_dict, data_placeholder, data, epochs=1000, batch_size=None, optimizer=None
+    tf_graph, variable_dict, data_placeholder, data, epochs=1000, batch_size=None, optimizer=None, loss_threshold=None
 ) -> List[float]:
     if optimizer is None:
         optimizer = tf.train.GradientDescentOptimizer(0.001)
@@ -151,6 +153,8 @@ def optimize_tf_graph(
         if not batch_size:
             batch_size = data.shape[0]
         batches_per_epoch = data.shape[0] // batch_size
+
+        last_loss = float('inf')
 
         # Iterate over epochs
         for i in range(epochs):
@@ -168,6 +172,12 @@ def optimize_tf_graph(
             epoch_loss /= data.shape[0]
 
             print("Epoch: %s, Loss: %s", i, epoch_loss)
+
+            if loss_threshold is not None and np.absolute(last_loss - epoch_loss) < loss_threshold: 
+                break
+            else:
+                last_loss = epoch_loss
+
             loss_list.append(epoch_loss)
 
         tf_graph_to_spn(variable_dict)

@@ -46,7 +46,7 @@ def get_networkx_obj(spn):
     return g, labels
 
 
-def plot_spn(spn, fname="plot.pdf"):
+def plot_spn(spn, fname=None):
 
     import networkx as nx
     from networkx.drawing.nx_pydot import graphviz_layout
@@ -89,8 +89,11 @@ def plot_spn(spn, fname="plot.pdf"):
     plt.margins(0, 0)
     plt.gca().xaxis.set_major_locator(NullLocator())
     plt.gca().yaxis.set_major_locator(NullLocator())
-    plt.savefig(fname, bbox_inches="tight", pad_inches=0)
 
+    if fname:
+        plt.savefig(fname, bbox_inches="tight", pad_inches=0)
+    else: 
+        plt.show(block=True)
 
 def plot_spn2(spn, fname="plot.pdf"):
     import networkx as nx

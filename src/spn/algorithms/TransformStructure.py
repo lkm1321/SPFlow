@@ -34,7 +34,7 @@ def Compress(node):
     return node
 
 
-def Prune(node):
+def Prune(node, threshold=-1.0):
     v, err = is_valid(node)
     assert v, err
     nodes = get_nodes_by_type(node, (Product, Sum))
@@ -64,6 +64,11 @@ def Prune(node):
 
                     n.weights.extend([cw * w for cw in c.weights])
                 continue
+
+            # Delete unimportant childrent. 
+            if is_sum and threshold > 0.0: 
+                if n.weights[i] < threshold:
+                    del n.children[i]
 
             i += 1
         if is_sum and i > 0:
