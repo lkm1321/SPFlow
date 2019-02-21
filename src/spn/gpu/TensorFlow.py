@@ -18,7 +18,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-
 def log_sum_to_tf_graph(node, children, data_placeholder=None, variable_dict=None, log_space=True, dtype=np.float32):
     assert log_space
     with tf.variable_scope("%s_%s" % (node.__class__.__name__, node.id)):
@@ -70,21 +69,39 @@ def add_tf_graph_to_node(node_type, lambda_func):
     _tf_graph_to_node[node_type] = lambda_func
 
 
-def spn_to_tf_graph(node, data, batch_size=None, node_tf_graph=_node_log_tf_graph, log_space=True, dtype=None):
+def spn_to_tf_graph(node, 
+                    data, 
+                    batch_size=None, 
+                    node_tf_graph=_node_log_tf_graph, 
+                    log_space=True, 
+                    dtype=None, 
+                    lls_matrix_tf=None):
+
     tf.reset_default_graph()
     if not dtype:
         dtype = data.dtype
     # data is a placeholder, with shape same as numpy data
     data_placeholder = tf.placeholder(data.dtype, (batch_size, data.shape[1]))
     variable_dict = {}
+    if lls_matrix_tf is None:
+        all_result_dict = None
+    else:
+        all_result_dict = dict()
+
     tf_graph = eval_spn_bottom_up(
         node,
         node_tf_graph,
         data_placeholder=data_placeholder,
         log_space=log_space,
         variable_dict=variable_dict,
+        all_results=all_result_dict,
         dtype=dtype,
     )
+
+    if lls_matrix_tf is not None: 
+        for n, ll in all_result_dict.items():
+            lls_matrix_tf[:, n.id] = ll[:, 0]
+
     return tf_graph, data_placeholder, variable_dict
 
 
