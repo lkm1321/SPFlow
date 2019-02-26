@@ -6,6 +6,7 @@ import spn.structure.leaves.parametric.Parametric as para
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import random_ops
 import tensorflow.contrib.distributions as dists
+from collections import defaultdict
 
 import time
 
@@ -76,7 +77,6 @@ class SpnArgs(object):
 
         self.drop_connect = False
         self.leaf = "gaussian"  # NOTE maybe we can use something more elegant here, eg. SPFlow classes
-
 
 class GaussVector(NodeVector):
     def __init__(self, region, args, name, given_means=None, given_stddevs=None, mean=0.0):
@@ -163,32 +163,67 @@ class BernoulliVector(NodeVector):
         self.scope = sorted(list(region))
         self.size = args.num_univ_distros
 
-        self.probs = bernoulli_variable_with_weight_decay(
-            name + "_bernoulli_params",
-            shape=[1, self.local_size, self.size],
-            wd=args.gauss_param_l2,
-            p=p,
-            values=given_params,
-        )
-
-        self.dist = dists.Bernoulli(logits=self.probs)
+        with tf.variable_scope(self.name) as scope: 
+            self.probs = bernoulli_variable_with_weight_decay(
+                name = "_bernoulltli_params",
+                shape=[1, self.local_size, self.size],
+                wd=args.gauss_param_l2,
+                p=[-np.log(self.local_size)],
+                values=given_params,
+            )
+            self.logits = tf.math.subtract( 0.001 + self.probs, tf.log(1.001 - tf.exp(self.probs, name='_logit_exp'), name='_logit_log'), name= '_logit')
+            self.dist = dists.Bernoulli(logits=self.logits)
 
     def forward(self, inputs, marginalized=None, classes=False):
-        local_inputs = tf.gather(inputs, self.scope, axis=1)
-        bernoulli_log_pdf_single = self.dist.log_prob(tf.expand_dims(local_inputs, axis=-1))
 
-        if marginalized is not None:
-            # marginalized = tf.clip_by_value(marginalized, 0.0, 1.0)
-            marginalized = tf.clip_by_value(marginalized, 0, 1)
-            local_marginalized = tf.expand_dims(tf.gather(marginalized, self.scope, axis=1), axis=-1)
-            # bernoulli_log_pdf_single = bernoulli_log_pdf_single * (1 - local_marginalized)
-            bernoulli_log_pdf_single = bernoulli_log_pdf_single * (1 - tf.cast(local_marginalized, dtype=tf.float32))
+        with tf.variable_scope(self.name + 'forward') as scope: 
+            local_inputs = tf.gather(inputs, self.scope, axis=1) # n_instance by self.local_size
+            bernoulli_log_pdf_single = self.dist.log_prob(tf.expand_dims(local_inputs, axis=-1)) # n_instance by self.local_size by self.size 
 
-        if classes:
-            return bernoulli_log_pdf_single
-        else:
-            bernoulli_log_pdf = tf.reduce_sum(bernoulli_log_pdf_single, 1)
+            # if marginalized is not None:
+            #     # marginalized = tf.clip_by_value(marginalized, 0.0, 1.0)
+            #     marginalized = tf.clip_by_value(marginalized, 0, 1)
+            #     local_marginalized = tf.expand_dims(tf.gather(marginalized, self.scope, axis=1), axis=-1)
+            #     # bernoulli_log_pdf_single = bernoulli_log_pdf_single * (1 - local_marginalized)
+            #     bernoulli_log_pdf_single = bernoulli_log_pdf_single * (1 - tf.cast(local_marginalized, dtype=tf.float32))
+
+            # if classes:
+            #     return bernoulli_log_pdf_single
+            # else:
+            bernoulli_log_pdf = tf.reduce_sum(bernoulli_log_pdf_single, 1, name='forward') # Summed (i.e. multiplied) accross scope. 
         return bernoulli_log_pdf
+
+    def backward_count(
+        self, 
+        parent_result, # n_instance by self.size. Is selected by parent? 
+        inference_result=None, # N_instance by self.size
+        input=None,
+        step_size=0.1
+        ): 
+
+        with tf.variable_scope(self.name + 'backward') as scope:
+
+            local_inputs = tf.gather(input, self.scope, axis=1) # n_instance by self.local_size
+            # bernoulli_log_pdf_single = self.dist.log_prob(tf.expand_dims(local_inputs, axis=-1)) # n_instance by self.local_size by self.size 
+
+
+            votes = tf.reduce_sum( 
+                        tf.multiply( 
+                            tf.reshape(
+                                tf.cast( parent_result, dtype=tf.float32), [-1, 1, self.size]), 
+                            tf.expand_dims(local_inputs, axis=-1)
+                    ), 
+                    axis=0, keepdims=True, name= '_updates'
+                    ) # 1 by self.local_size by self.size
+
+            update = tf.math.log_softmax( self.probs + step_size * votes - 0.1 * self.probs, axis=1, name = '_the_p_value')
+            job = tf.assign(self.probs, update, name= '_assignment' ) # normalize and assign. 
+
+        # job = votes
+        # HACK! tf.where seems to always leave the first dimension sorted, which means row 0 along components is sorted. 
+        # this is used for tf.segment_sum and we can avoid an unsorted segment sum. 
+
+        return job
 
     def sample(self, num_samples, num_dims, seed=None):
         sample_values = self.probs + tf.zeros([num_samples, self.local_size, self.args.num_univ_distros])
@@ -223,7 +258,7 @@ class ProductVector(NodeVector):
     def forward(self, inputs):
         dists1 = inputs[0]
         dists2 = inputs[1]
-        with tf.variable_scope("products") as scope:
+        with tf.variable_scope( self.name ) as scope:
             num_dist1 = int(dists1.shape[1])
             num_dist2 = int(dists2.shape[1])
 
@@ -237,6 +272,20 @@ class ProductVector(NodeVector):
             prod = tf.reshape(prod, [dists1.shape[0], num_dist1 * num_dist2])
 
         return prod
+
+    def backward_count(self, parent_result, inference_result, step_size=0.01):
+        """Do hard generative backprop by counting. 
+        
+        Arguments:
+            parent_result { n_instance by self.size tensor } -- [ number of counts from parent ]
+        """
+        with tf.variable_scope(self.name) as scope:
+            parent_result_per_child = tf.reshape( parent_result, [-1, self.vector1.size, self.vector2.size], self.name+'_update' )
+
+            parent_result_1 = tf.reduce_any(parent_result_per_child, axis=2 ) 
+            parent_result_2 = tf.reduce_any(parent_result_per_child, axis=1 )
+
+        return None, [parent_result_1, parent_result_2]
 
     def num_params(self):
         return 0
@@ -265,51 +314,121 @@ class SumVector(NodeVector):
         self.dropout_op = dropout_op
         self.args = args
         num_inputs = sum([v.size for v in prod_vectors])
-        self.params = variable_with_weight_decay(
-            name + "_weights", shape=[1, num_inputs, num_sums], stddev=5e-1, wd=None, values=given_weights
+        # self.params = variable_with_weight_decay(
+        #     name + "_weights", shape=[1, num_inputs, num_sums], stddev=5e-1, wd = None, values=given_weights
+        # )
+
+        initial_value = np.log( [1.0/num_inputs] * (num_inputs * num_sums) ).reshape( (1, num_inputs, num_sums))
+
+        self.weights = tf.get_variable(
+            name = name+"_weights", 
+            shape=[1, num_inputs, num_sums], 
+            initializer=tf.constant_initializer( initial_value ), 
+            dtype='float32'
         )
-        if args.linear_sum_weights:
-            if args.normalized_sums:
-                self.weights = tf.nn.softmax(self.params, 1)
-            else:
-                self.weights = self.params ** 2
-        else:
-            if args.normalized_sums:
-                self.weights = tf.nn.log_softmax(self.params, 1)
-                if args.sum_weight_l2:
-                    exp_weights = tf.exp(self.weights)
-                    weight_decay = tf.multiply(tf.nn.l2_loss(exp_weights), args.sum_weight_l2)
-                    tf.add_to_collection("losses", weight_decay)
-                    tf.add_to_collection("weight_losses", weight_decay)
-            else:
-                self.weights = self.params
+        self.params = self.weights
+        # if args.linear_sum_weights:
+        #     if args.normalized_sums:
+        #         self.weights = tf.nn.softmax(self.params, 1)
+        #     else:
+        #         self.weights = self.params ** 2
+        # else:
+        #     if args.normalized_sums:
+        #         self.weights = tf.nn.log_softmax(self.params, 1)
+        #         if args.sum_weight_l2:
+        #             exp_weights = tf.exp(self.weights)
+        #             weight_decay = tf.multiply(tf.nn.l2_loss(exp_weights), args.sum_weight_l2)
+        #             tf.add_to_collection("losses", weight_decay)
+        #             tf.add_to_collection("weight_losses", weight_decay)
+        #     else:
+        #         self.weights = self.params
 
     def forward(self, inputs):
-        prods = tf.concat(inputs, 1)
-        weights = self.weights
+        prods = tf.concat(inputs, 1) # 1 by num_input
+        weights = self.weights # 1 by num_input by num_sum
 
-        if self.args.linear_sum_weights:
-            sums = tf.log(tf.matmul(tf.exp(prods), tf.squeeze(self.weights)))
-        else:
-            prods = tf.expand_dims(prods, axis=-1)
-            if self.dropout_op is not None:
-                if self.args.drop_connect:
-                    batch_size = prods.shape[0]
-                    prod_num = prods.shape[1]
-                    dropout_shape = [batch_size, prod_num, self.size]
+        # if self.args.linear_sum_weights:
+        #     sums = tf.log(tf.matmul(tf.exp(prods), tf.squeeze(self.weights)))
+        # else:
+        prods = tf.expand_dims(prods, axis=-1) # 1 by num_input by 1 (broadcasted)
+        # if self.dropout_op is not None:
+        #     if self.args.drop_connect:
+        #         batch_size = prods.shape[0]
+        #         prod_num = prods.shape[1]
+        #         dropout_shape = [batch_size, prod_num, self.size]
 
-                    random_tensor = random_ops.random_uniform(dropout_shape, dtype=self.weights.dtype)
-                    dropout_mask = tf.log(math_ops.floor(self.dropout_op + random_tensor))
-                    weights = weights + dropout_mask
+        #         random_tensor = random_ops.random_uniform(dropout_shape, dtype=self.weights.dtype)
+        #         dropout_mask = tf.log(math_ops.floor(self.dropout_op + random_tensor))
+        #         weights = weights + dropout_mask
 
-                else:
-                    random_tensor = random_ops.random_uniform(prods.shape, dtype=prods.dtype)
-                    dropout_mask = tf.log(math_ops.floor(self.dropout_op + random_tensor))
-                    prods = prods + dropout_mask
+        #     else:
+        #         random_tensor = random_ops.random_uniform(prods.shape, dtype=prods.dtype)
+        #         dropout_mask = tf.log(math_ops.floor(self.dropout_op + random_tensor))
+        #         prods = prods + dropout_mask
 
-            sums = tf.reduce_logsumexp(prods + weights, axis=1)
+        sums = tf.reduce_logsumexp(prods + weights, axis=1) # 1 by num_sum
 
         return sums
+
+    # def backward_gradient(self, parent_result, node_lls):
+    #     sum_gradients = tf.concat(parent_result, 1)
+    #     weights = self.weights
+
+
+    def backward_count(
+        self, 
+        parent_result, # Parent result n_instance by num_sum
+        inference_result, # Inference result for each children n_instance by num_input
+        step_size = 0.1):
+
+        # Concatenate infernece result along product vector. 
+        inference_result_cat = tf.concat(inference_result, axis=1) # n_instance by num_input 
+        inference_result_expand = tf.expand_dims(inference_result_cat, axis=-1) # n_instance by num_input by 1 (broadcast to num_sum)
+
+        # Find max_idx for the child (need to multiply by weights because )
+        max_idx = tf.argmax( inference_result_expand + self.weights, axis=1 ) # n_instance by num_sum.
+        
+        # Get all 1's at max_idx. 
+        input_sizes = [v.size for v in self.inputs]
+        num_inputs = sum(input_sizes)
+
+        #### Check if this works correctly. #### 
+        is_maximum = tf.one_hot(max_idx, num_inputs, on_value=True, off_value=False, dtype=tf.bool, axis=1) # n_instance by num_input by num_sums
+        is_maximum = tf.logical_and( tf.reshape(parent_result, [-1, 1, self.size]), is_maximum)
+        # print(is_maximum.get_shape())
+        # is_maximum 
+        # is_maximum = tf.logical_and(tf.reshape([-1, ]) )
+        # is_maximum = tf.transpose(is_maximum, [0, 2, 1]) # n_instance by num_input by num_sum
+
+        # Find the number of votes
+        votes = tf.reduce_sum( tf.cast(is_maximum, tf.float32), axis = 0, name=self.name + '_self_votes') # num_input by num_sum. 
+
+        # This doesn't work, need to check for each instance. 
+        # # Multiply by number of parent selection (my selection is for each one of parent selection)
+        # votes = tf.multiply(parent_result, votes, name=self.name + '_total_votes')
+
+        updates = tf.expand_dims( 
+            tf.math.scalar_mul(step_size, votes), axis = 0, name=self.name+'_update'
+            ) # 1 by num_input by num_sum (same dimension as weights)
+
+        job = tf.assign(self.weights, tf.math.log_softmax( self.weights + updates - 0.1 * self.weights, axis = 1) )
+        
+        children_votes = tf.reduce_any(is_maximum, axis = -1) # n_instance by num_input
+                                                              # what does it mean to be chosen by two different sums? Probably not meaningful, but still. 
+
+        # Slice into list for the product vectors.
+        slice_idx = input_sizes
+        slice_idx.insert(0, 0)
+        slice_idx = np.cumsum(slice_idx)
+        # print(slice_idx)
+        # for start, end in zip(slice_idx[:-2], slice_idx[1:]): 
+        #     print(start, end, end - start, num_inputs)
+
+        children_slices = [ children_votes[:, start:end] for start, end in zip(slice_idx[:-1], slice_idx[1:]) ] # Slice for each input. 
+
+
+        # Update weights (training job, the thing to pass to product)
+        return job, children_slices
 
     def sample(self, inputs, seed=None):
         inputs = tf.concat(inputs, 2)
@@ -329,6 +448,15 @@ class SumVector(NodeVector):
 
     def num_params(self):
         return self.weights.shape.num_elements()
+
+    # Delete unimportant input. 
+    def prune(self, threshold=0.01, sess=tf.Session()): 
+        is_pruneable = tf.reduce_all(
+            tf.math.less(self.weights, 0.01), axis=2
+        ) # pruneable for all inputs. 
+
+        is_pruneable_val = sess.run([is_pruneable])
+        prune_idx = np.argwhere(is_pruneable_val)
 
 
 class RatSpn(object):
@@ -378,7 +506,7 @@ class RatSpn(object):
                     if self.args.leaf == "bernoulli":
                         name = "bernoulli_{}_{}".format(i, k)
                         bernoulli_vector = BernoulliVector(
-                            scope, self.args, name, given_params=a_node.probs.eval(session=sess)
+                            scope, self.args, name,  given_params=a_node.probs.eval(session=sess)
                         )
                         init_new_vars_op = tf.initializers.variables([bernoulli_vector.probs], name="init")
                         sess.run(init_new_vars_op)
@@ -479,8 +607,16 @@ class RatSpn(object):
 
         self.output_vector = self._region_distributions[self._region_graph.get_root_region()]
 
-    def forward(self, inputs, marginalized=None):
-        obj_to_tensor = {}
+    def prune(self, threshold=0.01, sess=tf.Session() ): 
+        for layer_idx in reversed(range(len(self.vector_list, 1))): 
+            for vector in self.vector_list[layer_idx]: 
+                vector.prune(threshold, sess)
+
+    def forward(self, inputs, marginalized=None, obj_to_tensor=None):
+
+        if obj_to_tensor is None:
+            obj_to_tensor = dict()
+        
         for leaf_vector in self.vector_list[0]:
             obj_to_tensor[leaf_vector] = leaf_vector.forward(inputs, marginalized)
 
@@ -489,8 +625,36 @@ class RatSpn(object):
                 input_tensors = [obj_to_tensor[obj] for obj in vector.inputs]
                 result = vector.forward(input_tensors)
                 obj_to_tensor[vector] = result
+        # print(obj_to_tensor[self.output_vector].get_shape())
 
         return obj_to_tensor[self.output_vector]
+
+    def backward_count(self, inputs, lls_results=None, root_counts=None, step_size=0.1):
+
+        parent_result = defaultdict()
+        parent_result[self.output_vector] = tf.convert_to_tensor(True, dtype=tf.bool)
+        jobs = []
+
+        for layer_idx in reversed( range(1, len(self.vector_list)) ):
+            for vector in self.vector_list[layer_idx]: 
+                inference_result = [ lls_results[child] for child in vector.inputs ]
+                job, child_results = vector.backward_count( parent_result[vector], inference_result = inference_result, step_size=step_size)
+                if job is not None: 
+                    jobs.append(job)
+
+                for child, child_result in zip(vector.inputs, child_results):
+                    # Just in case the child was already considerd. 
+                    if child in parent_result: 
+                        parent_result[child] = tf.logical_or(parent_result[child], child_result)
+                    else: 
+                        parent_result[child] = child_result
+        # Leaf nodes
+
+        for vector in self.vector_list[0]: 
+            job = vector.backward_count(parent_result[vector], lls_results[vector], input=inputs, step_size=step_size )
+            jobs.append(job)
+
+        return jobs
 
     # Does not work currently!
     def sample(self, num_samples=10, seed=None):
